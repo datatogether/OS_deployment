@@ -363,6 +363,7 @@ resources:
             done
             }
             enable_services_ka_1(){
+            sudo groupadd docker; sudo usermod -aG docker $USER
             systemctl daemon-reload; sleep 5
             systemctl enable docker kubelet; sleep 10
             systemctl restart docker kubelet; sleep 10
@@ -385,7 +386,7 @@ resources:
             sudo cp -i /etc/kubernetes/admin.conf /home/centos/.kube/config; sudo cp -i /etc/kubernetes/admin.conf /root/.kube/config
             sudo chown $(id centos -u):$(id centos -g) /home/centos/.kube/config; sudo chown $(id root -u):$(id root -g) /root/.kube/config;
             sleep 200
-            kubectl apply -f "https://cloud.weave.works/k8s/net?k8s-version=$(kubectl version | base64 | tr -d '\n')";
+            sudo -u centos kubectl apply -f "https://cloud.weave.works/k8s/net?k8s-version=$(kubectl version | base64 | tr -d '\n')";
             }
             kube_checks() {
             kubectl get nodes
