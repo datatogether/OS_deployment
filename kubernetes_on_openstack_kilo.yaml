@@ -1,0 +1,693 @@
+heat_template_version: 2015-04-30
+
+description: '''
+  Boot a Kubernetes cluster with a single master and one or more minions (as specified)
+  OpenStack Powered Cloud using Centos 2017-02'''
+
+parameter_groups:
+- label: credentials_and_kubeadm
+  description: Parameters
+  parameters: 
+  - ostack_password
+  - ostack_username
+  - ostack_auth_url
+  - ostack_tenant
+- label: node_details
+  description: Node customisation
+  parameters:
+  - use_kubeadm
+  - custom_script_file
+  - image
+  - flavor
+  - k8s_minion_count
+  - minion_volume_size
+- label: network_details
+  description: Network customisation
+  parameters:
+  - keyname
+  - network_resource
+  - ext_network
+
+parameters:
+
+  ostack_auth_url:
+    description: Obtain from Compute > Access & Security > API Access > Download Openstack RC
+    label: Openstack Auth URL
+    type: string
+    default: https://west.cloud.computecanada.ca:5000/v2.0
+    hidden: false
+
+  ostack_tenant:
+    description: Obtain from Compute > Access & Security > API Access > Download Openstack RC
+    label: Tenant ID
+    type: string
+    hidden: false
+
+  ostack_username: 
+    description: Repeat your username
+    label: Reenter username
+    type: string
+    hidden: false
+
+  ostack_password: 
+    description: Reenter your password.
+    label: Reenter Password
+    type: string
+    hidden: true
+
+  flavor:
+    description: Flavor used for all instances. Ideally at least 2 RAM and 6 GB.
+    label: Flavor
+    type: string
+    default: 083093b3-ffc1-464e-a453-cefce795021b
+    hidden: false
+    constraints:
+    - custom_constraint: nova.flavor
+    description: Valid flavors only
+
+  image:
+    description: Image that will be used for the nodes. This script works with CentOS 7 2017-02
+    label: Image
+    type: string
+    default: 83867183-2096-4d41-945b-953a5876b575
+    hidden: false
+    constraints: 
+    - custom_constraint: glance.image
+    description: Must be a valid Glance image
+
+  k8s_minion_count:
+    description: Number of machines to deploy as a Kubernetes Minion.
+    label: Kubernetes Minion Count
+    type: number
+    default: 2
+    hidden: false
+    constraints:
+    - range:
+        min: 1
+        max: 4
+      description: Must be between 2 and 4 machines (Current Project Limit)
+
+  ext_network:
+    description: See Routers tab for name of the External Network.
+    type: string
+    label: External Network
+    default: VLAN3337
+    hidden: false
+
+  keyname:
+    description: Name of keypair to be used for instance. Create your own before deployment.
+    label: Key Pair
+    type: string
+    default: dtnode_key
+    hidden: false
+    constraints: 
+    - custom_constraint: nova.keypair
+    description: Must be a known keypair
+
+  network_resource:
+    description: WestGrid project network
+    label: Network
+    type: string
+    default: a7741f95-0bc1-4424-86ef-2e8f66bcae18
+    hidden: false
+    constraints:
+    - custom_constraint: neutron.network
+    description: Must be a valid Neutron Network.
+
+  minion_volume_size:
+    description: Size of a cinder volume to allocate to the minions for container/image storage
+    label: Minion Volume Size
+    type: number
+    default: 8
+    hidden: false
+    constraints:
+    - range:
+        min: 4
+        max: 20
+    description: Must be between 4 and 20
+  
+  use_kubeadm:
+    description: Choice between using CentOS Repo's Kubernetes (older) or kubeadm to bootstrap the latest version of Kubernetes
+    label: Use Kubeadm
+    type: boolean
+    hidden: false
+    default: True
+
+  custom_script_file:
+    description: Add the link to a custom script to be run on start up.
+    label: Link to your custom post-start .sh script file
+    default: None
+    type: string
+    hidden: false
+
+resources:
+
+  ########################################
+  ##  Policies and IPs
+  ########################################
+
+  k8s_master_floating:
+    type: OS::Nova::FloatingIP
+    properties:
+      pool: { get_param: ext_network }
+
+  k8s_master_floating_association:
+    type: OS::Nova::FloatingIPAssociation
+    properties:
+      floating_ip: { get_resource: k8s_master_floating }
+      server_id:   { get_resource: k8s_master }
+
+  k8s_master_access:
+     type: OS::Neutron::SecurityGroup
+     properties:
+       name: k8s_master_access
+       rules:
+         - remote_ip_prefix: 0.0.0.0/0
+           protocol: tcp
+           port_range_min: 1
+           port_range_max: 65535
+         - remote_ip_prefix: 0.0.0.0/0
+           protocol: udp
+           port_range_min: 1
+           port_range_max: 65535
+         - remote_ip_prefix: 0.0.0.0/0
+           protocol: icmp
+
+  ########################################
+  ##  Servers and Volumes
+  ########################################
+
+  k8s_master:
+    type: OS::Nova::Server
+    properties:
+      name: k8s_master
+      image:    { get_param: image   }
+      flavor:   { get_param: flavor  }
+      key_name: { get_param: keyname }
+      networks: 
+      - network: { get_param: network_resource }
+      security_groups: 
+      - default
+      - get_resource: k8s_master_access
+      metadata: 
+        kube_group: k8scluster,vault,nofloating
+      user_data_format: RAW
+      user_data:
+        str_replace:
+          template: |
+            #!/bin/bash
+            sudo su -
+            os_inits() {
+            systemctl disable firewalld
+            setenforce 0
+            sed -i --follow-symlinks 's/SELINUX=.*/SELINUX=disabled/g' /etc/selinux/config
+            modprobe br_netfilter
+            echo '1' > /proc/sys/net/bridge/bridge-nf-call-iptables
+            echo '1' > /proc/sys/net/ipv4/ip_forward
+            sysctl --system
+            yum install deltarpm -y -q
+            yum update -y -q
+            yum remove chrony -y -q
+            yum install ntp -y -q
+            systemctl enable ntpd.service
+            systemctl start ntpd.service
+            }
+            package_install() {
+            yum install kubernetes-client -y -q
+            yum install kubernetes-master -y -q
+            yum install kubernetes-node -y -q
+            yum install kubernetes -y -q
+            yum install etcd -y -q
+            yum install flannel -y -q
+            yum install git -y -q
+            }
+            package_install_ka(){
+            cat <<EOF > /etc/yum.repos.d/kubernetes.repo
+            [kubernetes]
+            name=Kubernetes
+            baseurl=https://packages.cloud.google.com/yum/repos/kubernetes-el7-x86_64
+            enabled=1
+            gpgcheck=1
+            repo_gpgcheck=1
+            gpgkey=https://packages.cloud.google.com/yum/doc/yum-key.gpg
+                    https://packages.cloud.google.com/yum/doc/rpm-package-key.gpg
+            EOF
+            yum repolist -y
+            yum install kubeadm -y -q
+            yum install docker -y -q
+            yum install git -y -q
+            yum install flannel -y -q
+            yum install nfs-utils -y -q
+            }
+            config_host() {
+            masterip=$(ip addr show eth0 | awk '$1 == "inet" {print $2}' | cut -f1 -d/)
+            cat <<EOF >> /etc/hosts
+            $masterip    k8s-master.westcloud
+            $masterip    k8s-master
+            $masterip    k8s_master
+            $masterip    k8s_master.novalocal
+            EOF
+            }
+            backup_files() {
+            mkdir /etc/kubernetes/originals-backup
+            echo "This folder contains the original copies of all files modified by this script." > /etc/kubernetes/originals-backup/readme.txt
+            cp /etc/kubernetes/apiserver /etc/kubernetes/originals-backup/apiserver
+            cp /etc/kubernetes/config /etc/kubernetes/originals-backup/config
+            cp /etc/etcd/etcd.conf /etc/kubernetes/originals-backup/etcd.conf
+            cp /etc/kubernetes/kubelet /etc/kubernetes/originals-backup/kubelet
+            cp /etc/sysconfig/flanneld /etc/kubernetes/originals-backup/flanneld
+            cp /etc/kubernetes/controller-manager /etc/kubernetes/originals-backup/controller-manager
+            cp /etc/sysconfig/docker  /etc/kubernetes/originals-backup/docker
+            }
+            config_files() {
+            cat <<EOF > /etc/kubernetes/apiserver
+            # The address on the local server to listen to.
+            KUBE_API_ADDRESS="--insecure-bind-address=0.0.0.0"
+            # The port on the local server to listen on.
+            KUBE_API_PORT="--port=8080"
+            # Port minions listen on
+            KUBELET_PORT="--kubelet-port=10250"
+            # Comma separated list of nodes in the etcd cluster
+            KUBE_ETCD_SERVERS="--etcd-servers=http://k8s-master:2379"
+            # Address range to use for services
+            KUBE_SERVICE_ADDRESSES="--service-cluster-ip-range=10.254.0.0/16"
+            # default admission control policies
+            KUBE_ADMISSION_CONTROL="--admission-control=NamespaceLifecycle,NamespaceExists,LimitRanger,ResourceQuota"
+            # Add your own!
+            KUBE_API_ARGS=""
+            EOF
+            cat <<EOF > /etc/kubernetes/config
+            # logging to stderr means we get it in the systemd journal
+            KUBE_LOGTOSTDERR="--logtostderr=true"
+            # journal message level, 0 is debug
+            KUBE_LOG_LEVEL="--v=0"
+            # Should this cluster be allowed to run privileged docker containers
+            KUBE_ALLOW_PRIV="--allow-privileged=false"
+            # How the controller-manager, scheduler, and proxy find the apiserver
+            KUBE_MASTER="--master=http://k8s-master:8080"
+            EOF
+            cat <<EOF > /etc/etcd/etcd.conf
+            # [member]
+            ETCD_NAME=default
+            ETCD_DATA_DIR="/var/lib/etcd/default.etcd"
+            ETCD_LISTEN_CLIENT_URLS="http://0.0.0.0:2379"
+            #[cluster]
+            ETCD_ADVERTISE_CLIENT_URLS="http://0.0.0.0:2379"
+            EOF
+            cat <<EOF > /etc/kubernetes/kubelet
+            # The address for the info server to serve on (set to 0.0.0.0 or "" for all interfaces)
+            KUBELET_ADDRESS="--address=0.0.0.0"
+            # You may leave this blank to use the actual hostname
+            KUBELET_HOSTNAME=""
+            # location of the api-server
+            KUBELET_API_SERVER="--api-servers=http://k8s-master:8080"
+            # Add your own!
+            KUBELET_ARGS=""
+            EOF
+            cat <<EOF > /etc/kubernetes/cloud.conf
+            [Global]
+            auth-url=%ostack_auth_url%
+            tenant-id=%ostack_tenant% 
+            username=%ostack_username%
+            password=%ostack_password%
+            EOF
+            cat <<EOF > /etc/sysconfig/flanneld
+            # etcd url location.  Point this to the server where etcd runs
+            FLANNEL_ETCD="http://k8s-master:2379"
+            # etcd config key.  This is the configuration key that flannel queries
+            # For address range assignment
+            FLANNEL_ETCD_KEY="/kube-centos/network"
+            EOF
+            sed -i 's/KUBE_CONTROLLER_MANAGER_ARGS=.*/KUBE_CONTROLLER_MANAGER_ARGS=\"--cloud-provider=openstack --cloud-config=\/etc\/kubernetes\/cloud.conf\"/' /etc/kubernetes/controller-manager
+            sed -i 's/OPTIONS=.*/OPTIONS=\"--selinux-enabled=false --log-driver=journald --signature-verification=false\"/' /etc/sysconfig/docker
+            }
+            config_files_ka(){
+            cat <<EOF >  /etc/sysctl.d/k8s.conf
+            net.bridge.bridge-nf-call-ip6tables= 1
+            net.bridge.bridge-nf-call-iptables= 1
+            EOF
+            sysctl --system
+            sed -i 's/OPTIONS=.*/OPTIONS=\"--selinux-enabled=false --log-driver=journald --signature-verification=false\"/' /etc/sysconfig/docker
+            }
+            enable_services() {
+            systemctl enable --now etcd
+            sleep 10
+            etcdctl mkdir /kube-centos/network
+            etcdctl mk /kube-centos/network/config "{ \"Network\": \"172.30.30.0/12\", \"SubnetLen\": 24, \"Backend\": { \"Type\": \"vxlan\" } }"
+            systemctl daemon-reload
+            sleep 5
+            systemctl restart etcd
+            sleep 10
+            systemctl enable --now kube-apiserver
+            cat <<EOF >> /usr/lib/systemd/system/kube-apiserver.service
+            [Service]
+            PermissionsStartOnly=yes
+            ExecStartPre=/usr/bin/mkdir -p /var/run/kubernetes
+            ExecStartPre=/usr/bin/chown kube.kube /var/run/kubernetes
+            EOF
+            systemctl daemon-reload
+            sleep 5
+            systemctl restart etcd kube-apiserver
+            sleep 10
+            for service in kube-controller-manager flanneld kube-scheduler docker kube-proxy kubelet; do 
+            systemctl enable --now $service
+            sleep 10
+            done
+            kubectl config set-cluster default-cluster --server=http://k8s-master:8080
+            kubectl config set-context default-context --cluster=default-cluster --user=default-admin
+            kubectl config use-context default-context
+            sleep 10
+            systemctl is-system-running
+            for service in etcd kube-apiserver kube-controller-manager flanneld kube-scheduler docker kube-proxy kubelet; do 
+            systemctl status -l $service
+            done
+            }
+            enable_services_ka_1(){
+            systemctl daemon-reload; sleep 5
+            systemctl enable docker kubelet; sleep 10
+            systemctl restart docker kubelet; sleep 10
+            kubeadm init --pod-network-cidr=10.244.0.0/16; sleep 300
+            }
+            enable_services_ka_2(){
+            mkdir /var/nfs
+            kubeadm token create --print-join-command > /var/nfs/kubeadm-join.bash
+            chown nfsnobody:nfsnobody /var/nfs; chown nfsnobody:nfsnobody /var/nfs/*
+            chmod 777 /var/nfs; chmod 777 /var/nfs/*
+            systemctl enable nfs-server.service
+            cat <<EOF > /etc/exports
+            /var/nfs *(rw,no_root_squash,no_subtree_check)
+            EOF
+            exportfs -a
+            systemctl start nfs-server.service
+            }
+            enable_services_ka_3(){
+            mkdir -p /home/centos/.kube; mkdir -p /root/.kube
+            sudo cp -i /etc/kubernetes/admin.conf /home/centos/.kube/config; sudo cp -i /etc/kubernetes/admin.conf /root/.kube/config
+            sudo chown $(id centos -u):$(id centos -g) /home/centos/.kube/config; sudo chown $(id root -u):$(id root -g) /root/.kube/config;
+            sleep 200
+            kubectl apply -f "https://cloud.weave.works/k8s/net?k8s-version=$(kubectl version | base64 | tr -d '\n')";
+            }
+            kube_checks() {
+            kubectl get nodes
+            systemctl --state=failed
+            }
+            validate_and_run_csf(){
+            regex='^(https?|ftp|file)://[-A-Za-z0-9\+&@#/%?=~_|!:,.;]*[-A-Za-z0-9\+&@#/%=~_|]$.sh'
+            script_file=%custom_script_file%
+            if [[ $script_file =~ $regex ]]; then
+            echo "Valid custom Script provided."
+            curl $script_file -o custom_script.sh
+            . custom_script.sh
+            elif [[ $script_file == "None" ]]; then
+            echo "No custom script post-start provided."
+            else
+            echo "Custom Post-Script Script link not a valid .sh file: $script_file"
+            fi
+            }
+            with_kubeadm() {
+            sleep 10; os_inits
+            sleep 10; package_install_ka
+            sleep 10; config_host
+            sleep 10; config_files_ka
+            sleep 10; enable_services_ka_1
+            sleep 10; enable_services_ka_2
+            sleep 10; enable_services_ka_3
+            sleep 10; kube_checks
+            sleep 10; validate_and_run_csf            
+            }
+            without_kubeadm() {
+            sleep 10; os_inits
+            sleep 10; package_install
+            sleep 10; config_host
+            sleep 10; backup_files
+            sleep 10; config_files
+            sleep 10; enable_services
+            sleep 10; kube_checks
+            sleep 10; validate_and_run_csf
+            }
+            echo "USE KUBEADM PARAMETER SET TO:" %use_kubeadm%.
+            use_kubeadm=%use_kubeadm%
+            if [[ $use_kubeadm == "True" ]]; then
+            with_kubeadm
+            else
+            without_kubeadm
+            fi
+            echo "**** COMPLETE ****"
+          params:
+            "%ostack_auth_url%": { get_param: ostack_auth_url    }
+            "%ostack_tenant%":   { get_param: ostack_tenant      }
+            "%ostack_username%": { get_param: ostack_username    }
+            "%ostack_password%": { get_param: ostack_password    }
+            "%use_kubeadm%":     { get_param: use_kubeadm        }
+            "%custom_script_file%":  { get_param: custom_script_file }
+
+  k8s_master_vol:
+    type: OS::Cinder::Volume
+    properties:
+      size: 8
+      name: k8s_master_vol
+
+  k8s_master_vol_attach:
+    type: OS::Cinder::VolumeAttachment
+    depends_on:
+      - k8s_master
+      - k8s_master_vol
+    properties:
+      instance_uuid: {get_resource: k8s_master}
+      volume_id: {get_resource: k8s_master_vol}
+
+  k8s_minion_group:
+    type: OS::Heat::ResourceGroup
+    depends_on:
+      - k8s_master_floating_association
+    properties:
+      count: { get_param: k8s_minion_count }
+      resource_def: 
+        type: OS::Heat::Stack
+        properties:
+          parameters:
+            image:       { get_param: image   }
+            flavor:      { get_param: flavor  }
+            keyname:     { get_param: keyname }
+            minion_volume_size:   { get_param: minion_volume_size }
+            masterip:    { get_attr: [k8s_master, first_address] }
+            use_kubeadm: { get_param: use_kubeadm }
+          template: | 
+            heat_template_version: 2015-04-30
+            parameters:
+              image:    { type: string }
+              flavor:   { type: string }
+              keyname:  { type: string }
+              minion_volume_size: { type: number }
+              masterip: { type: string }
+              use_kubeadm: { type: string }
+            resources:
+              k8s_minion:
+                type: OS::Nova::Server
+                properties:
+                  image:    { get_param: image   }
+                  flavor:   { get_param: flavor  }
+                  key_name:  { get_param: keyname }
+                  name: k8s_minion_%index%
+                  metadata: 
+                    kube_group: k8sminion,k8scluster,nofloating
+                  user_data_format: RAW
+                  user_data:
+                    str_replace:
+                      template: |
+                        #!/bin/sh
+                        sudo su -
+                        os_inits() {
+                        systemctl disable firewalld
+                        setenforce 0
+                        sed -i --follow-symlinks 's/SELINUX=.*/SELINUX=disabled/g' /etc/selinux/config
+                        modprobe br_netfilter
+                        echo '1' > /proc/sys/net/bridge/bridge-nf-call-iptables
+                        yum install deltarpm -y -q
+                        yum update -y -q
+                        yum remove chrony -y -q
+                        yum install ntp -y -q
+                        systemctl enable ntpd.service
+                        systemctl start ntpd.service
+                        }
+                        package_install() {
+                        yum install kubernetes-client -y -q
+                        yum install kubernetes-master -y -q
+                        yum install kubernetes-node -y -q
+                        yum install kubernetes -y -q
+                        yum install etcd -y -q
+                        yum install flannel -y -q
+                        }
+                        config_host() {
+                        nodeip=$(ip addr show eth0 | awk '$1 == "inet" {print $2}' | cut -f1 -d/)
+                        cat <<EOF >> /etc/hosts
+                        $nodeip    k8s-node-%index%.westcloud
+                        $nodeip    k8s-node-%index%
+                        %masterip%  k8s-master.westcloud
+                        %masterip%  k8s-master
+                        EOF
+                        }
+                        backup_files(){
+                        mkdir /etc/kubernetes/originals-backup
+                        echo "This folder contains the original copies of all files modified by this script." > /etc/kubernetes/originals-backup/readme.txt
+                        cp /etc/kubernetes/config /etc/kubernetes/originals-backup/config
+                        cp /etc/kubernetes/kubelet /etc/kubernetes/originals-backup/kubelet
+                        cp /etc/sysconfig/flanneld /etc/kubernetes/originals-backup/flanneld
+                        cp /etc/sysconfig/docker  /etc/kubernetes/originals-backup/docker
+                        }
+                        config_files() {
+                        cat <<EOF > /etc/kubernetes/config
+                        # logging to stderr means we get it in the systemd journal
+                        KUBE_LOGTOSTDERR="--logtostderr=true"
+                        # journal message level, 0 is debug
+                        KUBE_LOG_LEVEL="--v=0"
+                        # Should this cluster be allowed to run privileged docker containers
+                        KUBE_ALLOW_PRIV="--allow-privileged=false"
+                        # How the controller-manager, scheduler, and proxy find the apiserver
+                        KUBE_MASTER="--master=http://k8s-master:8080"
+                        EOF
+                        cat <<EOF > /etc/sysconfig/flanneld
+                        # etcd url location.  Point this to the server where etcd runs
+                        FLANNEL_ETCD="http://k8s-master:2379"
+                        # etcd config key.  This is the configuration key that flannel queries
+                        # For address range assignment
+                        FLANNEL_ETCD_KEY="/kube-centos/network"
+                        EOF
+                        cat <<EOF > /etc/kubernetes/kubelet
+                        # The address for the info server to serve on (set to 0.0.0.0 or "" for all interfaces)
+                        KUBELET_ADDRESS="--address=0.0.0.0"
+                        # You may leave this blank to use the actual hostname
+                        KUBELET_HOSTNAME=""
+                        # location of the api-server
+                        KUBELET_API_SERVER="--api-servers=http://k8s-master:8080"
+                        # Add your own!
+                        KUBELET_ARGS=""
+                        EOF
+                        sed -i 's/OPTIONS=.*/OPTIONS=\"--selinux-enabled=false --log-driver=journald --signature-verification=false\"/' /etc/sysconfig/docker
+                        }
+                        enable_services() {
+                        systemctl daemon-reload
+                        sleep 10
+                        for services in kube-proxy flanneld docker kubelet ; do
+                          systemctl enable $services
+                          sleep 10
+                        done
+                        for services in kube-proxy flanneld docker kubelet ; do
+                          systemctl start $services
+                        sleep 10
+                        done
+                        kubectl config set-cluster default-cluster --server=http://k8s-master:8080
+                        kubectl config set-context default-context --cluster=default-cluster --user=default-admin
+                        kubectl config use-context default-context
+                        sleep 10
+                        systemctl is-system-running
+                        for service in kube-proxy kubelet flanneld docker; do
+                          systemctl status -l $service
+                        done
+                        kubectl get nodes
+                        }
+                        kubeadm_script(){
+                        setenforce 0
+                        sed -i --follow-symlinks 's/SELINUX=.*/SELINUX=disabled/g' /etc/sysconfig/selinux
+                        yum install deltarpm -y -q
+                        yum update -y -q
+                        yum remove chrony -y -q
+                        yum install ntp -y -q
+                        systemctl enable ntpd.service
+                        systemctl start ntpd.service
+                        nodeip=$(ip addr show eth0 | awk '$1 == "inet" {print $2}' | cut -f1 -d/)
+                        cat <<EOF >> /etc/hosts
+                        $nodeip    k8s-node-%index%.westcloud
+                        $nodeip    k8s-node-%index%
+                        %masterip%  k8s-master.westcloud
+                        %masterip%  k8s-master
+                        EOF
+                        firewall-cmd --permanent --add-port=10250/tcp
+                        firewall-cmd --permanent --add-port=10255/tcp
+                        firewall-cmd --permanent --add-port=30000-32767/tcp
+                        firewall-cmd --permanent --add-port=6783/tcp
+                        firewall-cmd  --reload
+                        cat <<EOF > /etc/yum.repos.d/kubernetes.repo
+                        [kubernetes]
+                        name=Kubernetes
+                        baseurl=https://packages.cloud.google.com/yum/repos/kubernetes-el7-x86_64
+                        enabled=1
+                        gpgcheck=1
+                        repo_gpgcheck=1
+                        gpgkey=https://packages.cloud.google.com/yum/doc/yum-key.gpg
+                                https://packages.cloud.google.com/yum/doc/rpm-package-key.gpg
+                        EOF
+                        yum repolist -y
+                        yum install kubeadm docker -y -q
+                        modprobe br_netfilter
+                        echo '1' > /proc/sys/net/bridge/bridge-nf-call-iptables
+                        echo '1' > /proc/sys/net/ipv4/ip_forward
+                        cat <<EOF >  /etc/sysctl.d/k8s.conf
+                        net.bridge.bridge-nf-call-ip6tables = 1
+                        net.bridge.bridge-nf-call-iptables = 1
+                        EOF
+                        sysctl --system
+                        sed -i 's/OPTIONS=.*/OPTIONS=\"--selinux-enabled=false --log-driver=journald --signature-verification=false\"/' /etc/sysconfig/docker
+                        systemctl daemon-reload
+                        systemctl restart docker && systemctl enable docker
+                        systemctl enable kubelet
+                        yum -y install nfs-utils
+                        systemctl enable nfs-server.service
+                        systemctl start nfs-server.service
+                        sleep 300
+                        mkdir -p /mnt/nfs/var/nfs
+                        mount k8s-master:/var/nfs /mnt/nfs/var/nfs
+                        ls -al /mnt/nfs/var/nfs
+                        . /mnt/nfs/var/nfs/kubeadm-join.bash
+                        systemctl daemon-reload
+                        systemctl restart docker kubelet
+                        }
+                        with_kubeadm() {
+                        kubeadm_script
+                        }
+                        without_kubeadm() {
+                        sleep 660; os_inits
+                        sleep 10; package_install
+                        sleep 10; config_host
+                        sleep 10; backup_files
+                        sleep 10; config_files
+                        sleep 10; enable_services
+                        }
+                        echo "USE KUBEADM PARAMETER SET TO:" %use_kubeadm%.
+                        use_kubeadm=%use_kubeadm%
+                        if [[ $use_kubeadm == "True" ]]; then
+                        with_kubeadm
+                        else
+                        without_kubeadm
+                        fi
+                        echo "**** COMPLETE ****"
+                      params: 
+                        "%masterip%":     { get_param: masterip    }
+                        "%use_kubeadm%":  { get_param: use_kubeadm }
+              k8s_minion_vol:
+                type: OS::Cinder::Volume
+                properties:
+                  size: { get_param: minion_volume_size}
+                  name: k8s_minion_vol_%index%
+              k8s_minion_vol_attach:
+                type: OS::Cinder::VolumeAttachment
+                properties:
+                  instance_uuid: { get_resource: k8s_minion     }
+                  volume_id:     { get_resource: k8s_minion_vol }
+
+outputs:
+
+  ssh_key_name:
+    description: >
+      Get the keypair .pem file from 'Access & Security' and place in the .ssh folder on your computer.
+    value: {get_param: keyname}
+
+  k8s_masterip:
+    description: >
+      Public ip address of the Kubernetes master server.
+    value: {get_attr: [k8s_master_floating, ip]}
+
+  login_instructions:
+    description: >
+      To log into the cluster: ssh -i .ssh/<ssh_key_name>.pem centos@<k8s_masterip>. You can attempt log in when it shows ACTIVE below.
+    value: {get_attr: [k8s_master, show, status]}
