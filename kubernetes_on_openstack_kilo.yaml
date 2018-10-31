@@ -367,11 +367,12 @@ resources:
             systemctl daemon-reload; sleep 5
             systemctl enable docker kubelet; sleep 10
             systemctl restart docker kubelet; sleep 10
-            kubeadm init --pod-network-cidr=10.244.0.0/16; sleep 300
+            kubeadm init --pod-network-cidr=10.244.0.0/16; sleep 100
             }
             enable_services_ka_2(){
             mkdir /var/nfs
             kubeadm token create --print-join-command > /var/nfs/kubeadm-join.bash
+            touch /var/nfs/cluster_ip_variables; touch /var/nfs/cluster_ip_only
             chown nfsnobody:nfsnobody /var/nfs; chown nfsnobody:nfsnobody /var/nfs/*
             chmod 777 /var/nfs; chmod 777 /var/nfs/*
             systemctl enable nfs-server.service
@@ -387,6 +388,7 @@ resources:
             sudo chown $(id centos -u):$(id centos -g) /home/centos/.kube/config; sudo chown $(id root -u):$(id root -g) /root/.kube/config;
             sleep 200
             sudo -u centos kubectl apply -f "https://cloud.weave.works/k8s/net?k8s-version=$(kubectl version | base64 | tr -d '\n')";
+            sleep 100
             }
             kube_checks() {
             sudo -u centos kubectl get nodes
@@ -405,6 +407,46 @@ resources:
             echo "Custom Post-Script Script link not a valid .sh file: $script_file"
             fi
             }
+            finalise() {
+            ## Install Go
+            cd /tmp
+            curl -sLO https://storage.googleapis.com/golang/go1.11.1.linux-amd64.tar.gz
+            sudo tar -C /usr/local -xvzf go1.11.1.linux-amd64.tar.gz ~/tmp1
+            mkdir -p ~/projects/{bin,pkg,src}
+            cat <<EOF > /etc/profile.d/path.sh
+            export PATH=$PATH:/usr/local/go/bin
+            EOF
+            cat <<EOF >> ~/.bash_profile
+            export GOBIN="$HOME/projects/bin"
+            export GOPATH="$HOME/projects/src"
+            EOF
+            source /etc/profile && source ~/.bash_profile
+            ## Install Helm 
+            curl -s https://raw.githubusercontent.com/helm/helm/master/scripts/get > get_helm.sh
+            chmod 700 get_helm.sh
+            ./get_helm.sh
+            sudo -u centos kubectl create serviceaccount --namespace kube-system tiller
+            sudo -u centos kubectl create clusterrolebinding tiller-cluster-rule --clusterrole=cluster-admin --serviceaccount=kube-system:tiller
+            sudo -u centos kubectl patch deploy --namespace kube-system tiller-deploy -p '{"spec":{"template":{"spec":{"serviceAccount":"tiller"}}}}'      
+            helm init --service-account tiller --upgrade
+            helm repo update  
+            helm ls
+            sudo -u centos kubectl get pods --namespace kube-system
+            ## Install GlusterFS 
+            yum -y install centos-release-gluster41.x86_64 
+            yum install glusterfs gluster-cli -y 
+            yum install -y glusterfs-libs glusterfs-server
+            yum update -y
+            systemctl enable glusterd.service
+            systemctl start glusterd.service 
+            ## Update with ip variables for master and nodes  
+            my_ip=$(ip addr show eth0 | awk '$1 == "inet" {print $2}' | cut -f1 -d/)
+            my_hn_t=$(hostnamectl --transient)
+            echo $my_hn_t=$my_ip >> /var/nfs/cluster_ip_variables
+            sed -i 's/k8s/IPVAR/'g /var/nfs/cluster_ip_variables
+            sed -i 's/-//'g /var/nfs/cluster_ip_variables
+            echo $my_ip >> /var/nfs/cluster_ip_only
+            }
             with_kubeadm() {
             sleep 10; os_inits
             sleep 10; package_install_ka
@@ -414,7 +456,8 @@ resources:
             sleep 10; enable_services_ka_2
             sleep 10; enable_services_ka_3
             sleep 10; kube_checks
-            sleep 10; validate_and_run_csf            
+            sleep 10; finalise
+            sleep 10; validate_and_run_csf         
             }
             without_kubeadm() {
             sleep 10; os_inits
@@ -424,7 +467,6 @@ resources:
             sleep 10; config_files
             sleep 10; enable_services
             sleep 10; kube_checks
-            sleep 10; validate_and_run_csf
             }
             echo "USE KUBEADM PARAMETER SET TO:" %use_kubeadm%.
             use_kubeadm=%use_kubeadm%
@@ -488,7 +530,7 @@ resources:
                 properties:
                   image:    { get_param: image   }
                   flavor:   { get_param: flavor  }
-                  key_name:  { get_param: keyname }
+                  key_name: { get_param: keyname }
                   name: k8s_minion_%index%
                   metadata: 
                     kube_group: k8sminion,k8scluster,nofloating
@@ -618,7 +660,7 @@ resources:
                         gpgkey=https://packages.cloud.google.com/yum/doc/yum-key.gpg
                                 https://packages.cloud.google.com/yum/doc/rpm-package-key.gpg
                         EOF
-                        yum repolist -y
+                        yum repolist -y -q
                         yum install kubeadm docker -y -q
                         modprobe br_netfilter
                         echo '1' > /proc/sys/net/bridge/bridge-nf-call-iptables
@@ -632,7 +674,7 @@ resources:
                         systemctl daemon-reload
                         systemctl restart docker && systemctl enable docker
                         systemctl enable kubelet
-                        yum -y install nfs-utils
+                        yum -y install nfs-utils -q
                         systemctl enable nfs-server.service
                         systemctl start nfs-server.service
                         sleep 300
@@ -643,8 +685,53 @@ resources:
                         systemctl daemon-reload
                         systemctl restart docker kubelet
                         }
+                        finalise() {
+                        mkdir -p /home/centos/.kube; mkdir -p /root/.kube
+                        sudo cp -i /etc/kubernetes/admin.conf /home/centos/.kube/config; sudo cp -i /etc/kubernetes/admin.conf /root/.kube/config
+                        sudo chown $(id centos -u):$(id centos -g) /home/centos/.kube/config; sudo chown $(id root -u):$(id root -g) /root/.kube/config;
+                        sleep 100
+                        ## Install Go
+                        cd /tmp
+                        curl -sLO https://storage.googleapis.com/golang/go1.11.1.linux-amd64.tar.gz
+                        sudo tar -C /usr/local -xvzf go1.11.1.linux-amd64.tar.gz ~/tmp1
+                        mkdir -p ~/projects/{bin,pkg,src}
+                        cat <<EOF > /etc/profile.d/path.sh
+                        export PATH=$PATH:/usr/local/go/bin
+                        EOF
+                        cat <<EOF >> ~/.bash_profile
+                        export GOBIN="$HOME/projects/bin"
+                        export GOPATH="$HOME/projects/src"
+                        EOF
+                        source /etc/profile && source ~/.bash_profile
+                        ## Install Helm 
+                        curl -s https://raw.githubusercontent.com/helm/helm/master/scripts/get > get_helm.sh
+                        chmod 700 get_helm.sh
+                        ./get_helm.sh
+                        sudo su centos kubectl create serviceaccount --namespace kube-system tiller
+                        sudo su centos kubectl create clusterrolebinding tiller-cluster-rule --clusterrole=cluster-admin --serviceaccount=kube-system:tiller
+                        sudo su centos kubectl patch deploy --namespace kube-system tiller-deploy -p '{"spec":{"template":{"spec":{"serviceAccount":"tiller"}}}}'      
+                        helm init --service-account tiller --upgrade
+                        helm repo update  
+                        helm ls
+                        sudo su centos kubectl get pods --namespace kube-system
+                        ## Install GlusterFS 
+                        yum -y install centos-release-gluster41.x86_64 
+                        yum install glusterfs gluster-cli -y 
+                        yum install -y glusterfs-libs glusterfs-server
+                        yum update -y
+                        systemctl enable glusterd.service
+                        systemctl start glusterd.service 
+                        ## Update with ip variables for master and nodes
+                        my_hn_t=$(hostnamectl --transient)  
+                        my_ip=$(ip addr show eth0 | awk '$1 == "inet" {print $2}' | cut -f1 -d/)
+                        echo $my_hn_t=$my_ip >> /mnt/nfs/var/nfs/cluster_ip_variables
+                        echo $my_ip >> /mnt/nfs/var/nfs/cluster_ip_only
+                        sed -i 's/k8s/IPVAR/'g /mnt/nfs/var/nfs/cluster_ip_variables
+                        sed -i 's/-//'g /mnt/nfs/var/nfs/cluster_ip_variables
+                        }  
                         with_kubeadm() {
                         kubeadm_script
+                        sleep 200; finalise
                         }
                         without_kubeadm() {
                         sleep 660; os_inits
