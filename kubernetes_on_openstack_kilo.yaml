@@ -421,24 +421,6 @@ resources:
             export GOPATH="$HOME/projects/src"
             EOF
             source /etc/profile && source ~/.bash_profile
-            ## Install Helm 
-            curl -s https://raw.githubusercontent.com/helm/helm/master/scripts/get > get_helm.sh
-            chmod 700 get_helm.sh
-            ./get_helm.sh
-            sudo -u centos kubectl create serviceaccount --namespace kube-system tiller
-            sudo -u centos kubectl create clusterrolebinding tiller-cluster-rule --clusterrole=cluster-admin --serviceaccount=kube-system:tiller
-            sudo -u centos kubectl patch deploy --namespace kube-system tiller-deploy -p '{"spec":{"template":{"spec":{"serviceAccount":"tiller"}}}}'      
-            helm init --service-account tiller --upgrade
-            helm repo update  
-            helm ls
-            sudo -u centos kubectl get pods --namespace kube-system
-            ## Install GlusterFS 
-            yum -y install centos-release-gluster41.x86_64 
-            yum install glusterfs gluster-cli -y 
-            yum install -y glusterfs-libs glusterfs-server
-            yum update -y
-            systemctl enable glusterd.service
-            systemctl start glusterd.service 
             ## Update with ip variables for master and nodes  
             my_ip=$(ip addr show eth0 | awk '$1 == "inet" {print $2}' | cut -f1 -d/)
             my_hn_t=$(hostnamectl --transient)
@@ -703,24 +685,6 @@ resources:
                         export GOPATH="$HOME/projects/src"
                         EOF
                         source /etc/profile && source ~/.bash_profile
-                        ## Install Helm 
-                        curl -s https://raw.githubusercontent.com/helm/helm/master/scripts/get > get_helm.sh
-                        chmod 700 get_helm.sh
-                        ./get_helm.sh
-                        sudo su centos kubectl create serviceaccount --namespace kube-system tiller
-                        sudo su centos kubectl create clusterrolebinding tiller-cluster-rule --clusterrole=cluster-admin --serviceaccount=kube-system:tiller
-                        sudo su centos kubectl patch deploy --namespace kube-system tiller-deploy -p '{"spec":{"template":{"spec":{"serviceAccount":"tiller"}}}}'      
-                        helm init --service-account tiller --upgrade
-                        helm repo update  
-                        helm ls
-                        sudo su centos kubectl get pods --namespace kube-system
-                        ## Install GlusterFS 
-                        yum -y install centos-release-gluster41.x86_64 
-                        yum install glusterfs gluster-cli -y 
-                        yum install -y glusterfs-libs glusterfs-server
-                        yum update -y
-                        systemctl enable glusterd.service
-                        systemctl start glusterd.service 
                         ## Update with ip variables for master and nodes
                         my_hn_t=$(hostnamectl --transient)  
                         my_ip=$(ip addr show eth0 | awk '$1 == "inet" {print $2}' | cut -f1 -d/)
