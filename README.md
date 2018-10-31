@@ -8,34 +8,14 @@ This **Openstack Heat Template** creates up a Kubernetes cluster on Openstack fo
 
 New features of the Data Together platform are coordinated and developed in one or more of the other repositories listed in our [Roadmap](https://github.com/datatogether/roadmap). 
 
-## License & Copyright
-
-Copyright (C) 2018 Data Together
-
-This program is free software: you can redistribute it and/or modify it under
-the terms of the GNU Affero General Public License as published by the Free Software
-Foundation, version 3.0.
-
-This program is distributed in the hope that it will be useful, but WITHOUT ANY
-WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
-PARTICULAR PURPOSE.
-
-See the [`LICENSE`](./LICENSE) file for details.
-
-## Getting Involved
-
-We would love involvement from more people! If you notice any errors or would like to submit changes, please see our [Contributing Guidelines](./.github/CONTRIBUTING.md).
-
-We use GitHub issues for [tracking bugs and feature requests](https://github.com/datatogether/datatogether_deployment/issues) and Pull Requests (PRs) for [submitting changes](https://github.com/datatogether/datatogether_deployment/pulls).
-
 ## Usage
+
 ### 1. Create a Keypair
 _Key pairs are ssh credentials which are injected into images when they are launched. Creating a new key pair registers the public key and downloads the private key (a .pem file). Protect and use the key as you would any normal ssh private key._
 
 * Navigate to  Compute > Access & Security > Key Pairs > Create Key Pair
 
 * Provide a name for the key and download and save the .pem file to the .ssh folder on your local machine. Change the permission of the file to 600. (`chmod 600 ____.pem`)
-
 
 ### 2. Get the Parameters from your Openstack Project
 * **Openstack Auth URL** : Obtain from Compute > Access & Security > API Access > Download Openstack RC
@@ -46,6 +26,7 @@ _Key pairs are ssh credentials which are injected into images when they are laun
 * Navigate to **Orchestration** > **Stacks** > **Launch Stack**
 
 * Select URL as the Template Source, and provide the RAW URL of the heat template. Alternatively, you may copy/paste the contents or upload the file.
+URL: ` `
 
 * Fill out **Launch Stack** form:
 	- Use the **Openstack Auth URL**, **Tenant ID**, **External Network** and **Key Pair** from above.
@@ -73,9 +54,11 @@ _Key pairs are ssh credentials which are injected into images when they are laun
 |-| vm set up stalled | Delete stack. Try rebooting the Network (Network > Networks > Edit Network. Set Admin State as DOWN. Refresh and set again as UP.) |
 
 
-### 5. Optional Installation Instructions
+## Optional Installations
+The nodes have a GO environemnt installed, but the following are optional installation guides:
 
-## Install Helm 
+### Helm 
+A tool for managing Kubernetes charts. Charts are packages of pre-configured Kubernetes resources.
 ```
 curl -s https://raw.githubusercontent.com/helm/helm/master/scripts/get > get_helm.sh
 chmod 700 get_helm.sh
@@ -86,21 +69,35 @@ kubectl patch deploy --namespace kube-system tiller-deploy -p '{"spec":{"templat
 helm init --service-account tiller --upgrade
 helm repo update  
 ```
+Reference:
+* [Helm](https://github.com/helm/helm/)
 
-## Install GlusterFS 
+### GlusterFS 
+A convenient way to unlock the power of dynamically provisioned, persistent GlusterFS volumes in Kubernetes.
 ```
 yum -y -q install centos-release-gluster41.x86_64 glusterfs gluster-cli glusterfs-libs glusterfs-server
 systemctl enable glusterd.service
 systemctl start glusterd.service 
 ```
+Reference:
+*[GlusterFS](https://github.com/gluster/gluster-kubernetes)
 
-## Related Links
-* [Install IPFS](https://github.com/helm/charts/tree/master/stable/ipfs)
+### Dashboards - Kubernetes, Prometheus, Grafana
+Resource management and statistics
+```
+kubectl apply -f https://raw.githubusercontent.com/kubernetes/dashboard/master/src/deploy/recommended/kubernetes-dashboard.yaml
+kubectl apply -f https://github.com/giantswarm/kubernetes-prometheus/tree/master/manifests/grafana/grafana-import-dashboards-job.yaml
+```
+Reference:
+* [Kubernetes Dashboard](https://github.com/kubernetes/dashboard/)
+* [Prometheus & Grafana](https://github.com/giantswarm/kubernetes-prometheus/)
 
+### [IPFS](https://github.com/helm/charts/tree/master/stable/ipfs)
 
-### Documentation
+## Documentation
+For Logs and Notes: See DataTogether Shared Drive.
 
-## Heat Orchestration Template Resources
+### Heat Orchestration Template Resources
 Heat template Version: 2015-04-30
 
 **Policies and IPs**
@@ -122,5 +119,18 @@ Heat template Version: 2015-04-30
 * `k8s_masterip` - External IP of the master node
 * `login_instructions` - Guideline on how to log into the master node
 
-## Customisation
-If switching to a different image, change the references to `centos` to the default login for that image, and adjust `yum` to the default package installer. See the functions `os_inits`, `packages_install()` and `packages_install_ka()` which are image specific in both the master and minion templates, and `kubeadm_script` in the minion template.
+### Customisation
+If switching to a different image, change the references to `centos` to the default login for that image, and adjust `yum` to the default package installer. See the functions `os_inits`, `packages_install` and `packages_install_ka` which are image specific in both the master and minion templates, and `kubeadm_script` in the minion template. Since the OS optimation is completely in shell scripting, the template can be reworked for use with other deployment tools like Ainsible for other platforms.
+
+## License & Copyright
+
+Copyright (C) 2018 Data Together
+
+See the [`LICENSE`](./LICENSE) file for details.
+
+## Getting Involved
+
+We would love involvement from more people! If you notice any errors or would like to submit changes, please see our [Contributing Guidelines](./.github/CONTRIBUTING.md).
+
+We use GitHub issues for [tracking bugs and feature requests](https://github.com/datatogether/datatogether_deployment/issues) and Pull Requests (PRs) for [submitting changes](https://github.com/datatogether/datatogether_deployment/pulls).
+
