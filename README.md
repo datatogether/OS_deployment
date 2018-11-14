@@ -8,6 +8,9 @@ This **Openstack Heat Template** creates up a Kubernetes cluster on Openstack fo
 
 New features of the Data Together platform are coordinated and developed in one or more of the other repositories listed in our [Roadmap](https://github.com/datatogether/roadmap). 
 
+
+![K8s-on-OpenStack](/screenshots/K8s-on-OpenStack.gif)
+
 ## Usage
 
 ### 1. Create a Keypair
